@@ -20,7 +20,7 @@ use tokio_serial::{SerialStream};
 //function to open duet connection
 pub async fn open_duet_connection(
     duet_ip_var: &str
-) -> Result<TcpStream, Box<dyn std::error::Error>> {
+) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
 
     //let addr_str = duet_ip;
 
@@ -39,7 +39,7 @@ pub async fn open_duet_connection(
 pub async fn open_microwave_connection(
     microwave_serial_port_var: &str, 
     microwave_baud_rate: u32
-) -> Result<SerialStream, Box<dyn std::error::Error>> {
+) -> Result<SerialStream, Box<dyn std::error::Error + Send + Sync>> {
 
     let port_name = microwave_serial_port_var;
     let baud_rate = microwave_baud_rate;
@@ -52,7 +52,7 @@ pub async fn open_microwave_connection(
 
 
 // function to poll duet
-pub async fn poll_duet(duet_connection: &mut TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn poll_duet(duet_connection: &mut TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // probably adjust this to poll position 
     //let mut buffer = [0; 1024];

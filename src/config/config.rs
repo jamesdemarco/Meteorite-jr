@@ -24,9 +24,11 @@ pub struct MicrowaveCommand {
 
 }
 
+use crate::controllers::{DuetController, MicrowaveController};
+
 pub struct AppUI{
-    pub duet_tx: tokio::sync::watch::Sender<DuetCommand>,
-    pub microwave_tx: tokio::sync::watch::Sender<MicrowaveCommand>,
+    pub duet: Box<dyn DuetController + Send + Sync>,
+    pub microwave: Box<dyn MicrowaveController + Send + Sync>,
 }
 
 // Cached state structs used by controllers/clients.

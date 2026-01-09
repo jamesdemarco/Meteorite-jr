@@ -27,3 +27,23 @@ pub struct AppUI{
     pub duet_tx: tokio::sync::watch::Sender<DuetCommand>,
     pub microwave_tx: tokio::sync::watch::Sender<MicrowaveCommand>,
 }
+
+// Cached state structs used by controllers/clients.
+// Keep simple and cloneable for fast UI reads.
+#[derive(Clone, Default, Debug)]
+pub struct DuetState {
+    pub connected: bool,
+    pub last_error: Option<String>,
+    pub status: Option<String>,
+    pub last_command: Option<String>,
+    pub position: [f32; 3],
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct MicrowaveState {
+    pub connected: bool,
+    pub enabled: bool,
+    pub last_error: Option<String>,
+    pub status: Option<String>,
+    pub power_watts: f32,
+}

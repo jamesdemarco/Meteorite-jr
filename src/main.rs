@@ -37,16 +37,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
 
+    // Cached state containers
+    use std::sync::{Arc, RwLock};
+    let duet_state = Arc::new(RwLock::new(DuetState::default()));
+    let microwave_state = Arc::new(RwLock::new(MicrowaveState::default()));
+
     // Duet task
+    let duet_state_task = Arc::clone(&duet_state);
     tokio::spawn(async move{
-        if let Err(e) = duet::manager::duet_control(duet, duet_rx).await {
+        if let Err(e) = duet::manager::duet_control(duet, duet_rx, duet_state_task).await {
             eprintln!("error in Duet task: {:?}", e);
         }
     });
 
     // Microwave task
+    let microwave_state_task = Arc::clone(&microwave_state);
     tokio::spawn(async move{
-        if let Err(e) = microwave::manager::microwave_control(microwave, microwave_rx).await {
+        if let Err(e) = microwave::manager::microwave_control(microwave, microwave_rx, microwave_state_task).await {
             eprintln!("error in Microwave task: {:?}", e);
         }
     });

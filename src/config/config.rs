@@ -18,6 +18,7 @@ pub struct DuetCommand {
 }
 
 
+#[derive(Clone)]
 pub struct MicrowaveCommand {
     pub command: String,
 

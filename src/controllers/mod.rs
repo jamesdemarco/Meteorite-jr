@@ -5,6 +5,10 @@ pub mod microwave;
 // Command methods enqueue work; query methods return cached state.
 use crate::config::config::{DuetState, MicrowaveState};
 
+/// Controllers must be non-blocking:
+/// - Command methods enqueue work and return immediately.
+/// - No hardware I/O or awaits inside these methods.
+/// - State queries return a cheap, cloned snapshot from cached state.
 pub trait DuetController: Send + Sync {
 	// Toggle connection state (no I/O in mock)
 	fn connect(&self);
@@ -15,6 +19,7 @@ pub trait DuetController: Send + Sync {
 	fn state(&self) -> DuetState;
 }
 
+/// Same non-blocking rules apply to the Microwave controller.
 pub trait MicrowaveController: Send + Sync {
 	// Toggle connection state (no I/O in mock)
 	fn connect(&self);

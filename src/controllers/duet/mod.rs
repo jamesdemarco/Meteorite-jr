@@ -1,4 +1,4 @@
 pub mod mock;
-pub use mock::*;
+#[cfg(feature="mock")] pub use mock::*;
 pub mod client;
-pub use client::*;
+#[cfg(feature="real")] pub use client::*;

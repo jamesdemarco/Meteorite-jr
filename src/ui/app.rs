@@ -58,6 +58,12 @@ use eframe::egui;
 
 
 
+// App-level type holding controller trait objects.
+pub struct AppUI{
+    pub duet: Box<dyn DuetController + Send + Sync>,
+    pub microwave: Box<dyn MicrowaveController + Send + Sync>,
+}
+
 impl AppUI {
     pub fn new() -> Self {
         #[cfg(feature="mock")]
@@ -81,7 +87,8 @@ impl AppUI {
             let (duet_tx, duet_rx) = watch::channel(DuetCommand{ command: String::from("INIT") });
             let (microwave_tx, microwave_rx) = watch::channel(MicrowaveCommand{ command: String::from("INIT") });
 
-            // Forwarder tasks from mpsc -> watch
+            // Forwarder tasks from mpsc -> watch.
+            // Extend here to add new command types and routing if needed.
             tokio::spawn({
                 let duet_tx = duet_tx.clone();
                 async move {
@@ -100,6 +107,7 @@ impl AppUI {
             });
 
             // Connect devices and spawn control tasks
+            // Duet device task. Add protocol parsing, reconnection logic, and polling inside manager.
             tokio::spawn({
                 let state_for_task = Arc::clone(&duet_state);
                 let state_for_err = Arc::clone(&duet_state);
@@ -124,6 +132,7 @@ impl AppUI {
                 }
             });
 
+            // Microwave device task. Extend inside manager for command handling and polling.
             tokio::spawn({
                 let state_for_task = Arc::clone(&microwave_state);
                 let state_for_err = Arc::clone(&microwave_state);

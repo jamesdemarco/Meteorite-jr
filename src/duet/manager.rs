@@ -1,4 +1,14 @@
-/****************    DUET Control module   *************/
+/**
+ * DUET Control module
+ *
+ * Task owns all hardware I/O. Extend here to:
+ * - Parse protocol responses and update `DuetState` fields.
+ * - Add reconnection logic on errors/timeouts.
+ * - Add polling at 5–10 Hz to refresh position/status.
+ *
+ * UI must never block; commands arrive via a watch channel and
+ * state updates write into `Arc<RwLock<DuetState>>` for fast snapshots.
+ */
 
 // handles communication with the DUET 2 board
 // manages G-code sending and status receiving

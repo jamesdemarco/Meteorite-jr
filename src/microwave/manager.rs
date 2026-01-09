@@ -1,4 +1,14 @@
-/****************    Microwave Control module   *************/
+/**
+ * Microwave Control module
+ *
+ * Task owns all serial I/O. Extend here to:
+ * - Implement protocol commands and acknowledgements.
+ * - Add periodic polling or query support if available.
+ * - Add reconnection handling when serial port disconnects.
+ *
+ * UI must never block; commands arrive via a watch channel and
+ * state updates write into `Arc<RwLock<MicrowaveState>>` for fast snapshots.
+ */
 
 // handles commands to the microwave module
 

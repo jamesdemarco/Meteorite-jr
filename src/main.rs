@@ -18,6 +18,7 @@ mod controllers;
 
 // imports
 use crate::config::config::*;
+use crate::ui::app::AppUI;
 // wiring is centralized in AppUI::new via feature flags
 
 

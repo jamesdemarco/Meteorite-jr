@@ -24,12 +24,7 @@ pub struct MicrowaveCommand {
 
 }
 
-use crate::controllers::{DuetController, MicrowaveController};
-
-pub struct AppUI{
-    pub duet: Box<dyn DuetController + Send + Sync>,
-    pub microwave: Box<dyn MicrowaveController + Send + Sync>,
-}
+// AppUI is defined in ui/app.rs; config only holds configuration and shared data types.
 
 // Cached state structs used by controllers/clients.
 // Keep simple and cloneable for fast UI reads.

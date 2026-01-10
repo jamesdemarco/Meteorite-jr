@@ -7,21 +7,20 @@ pub const MICROWAVE_SERIAL_PORT: &str = "/dev/ttyUSB0";
 pub const MICROWAVE_BAUD_RATE: u32 = 9600;
 
 
-#[derive(Clone)]
-pub struct DuetCommand {
-    pub command: String,
-    //pub axis: String,
-    //pub value: f32,
-
-    // FUTURE: stylistic implementation
-    // 
+#[derive(Clone, Debug)]
+pub enum DuetCommand {
+    Connect,
+    Disconnect,
+    SendGcode(String),
+    SendMCommand(String),
 }
 
 
-#[derive(Clone)]
-pub struct MicrowaveCommand {
-    pub command: String,
-
+#[derive(Clone, Debug)]
+pub enum MicrowaveCommand {
+    Connect,
+    Disconnect,
+    SetPower(f32),
 }
 
 // AppUI is defined in ui/app.rs; config only holds configuration and shared data types.

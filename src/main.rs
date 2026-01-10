@@ -9,8 +9,7 @@
 // module declaration
 mod ui;
 mod utilities;
-mod duet;
-mod microwave;
+mod drivers;
 mod config;
 mod controllers;
 

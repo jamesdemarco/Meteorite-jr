@@ -21,3 +21,18 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-package-a
 3.) From vscode terminal project root
 
 cargo check
+
+
+
+
+
+
+
+
+ CAn run in both Mock and Real scenarios
+
+
+ Real: Cargo run
+
+
+ Mock: cargo run --no-default-features --features mock

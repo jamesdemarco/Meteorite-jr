@@ -39,7 +39,7 @@ use crate::controllers::{DuetController, MicrowaveController};
 #[cfg(feature="real")] use crate::controllers::duet::DuetClient;
 #[cfg(feature="real")] use crate::controllers::microwave::MicrowaveClient;
 #[cfg(feature="real")] use crate::utilities::utils::{open_duet_connection, open_microwave_connection};
-#[cfg(feature="real")] use tokio::sync::{mpsc, watch};
+#[cfg(feature="real")] use tokio::sync::mpsc;
 #[cfg(feature="real")] use std::sync::{Arc, RwLock};
 use eframe::egui;
 //use egui_plot::Legend;
@@ -79,34 +79,10 @@ impl AppUI {
             let duet_state = Arc::new(RwLock::new(DuetState::default()));
             let microwave_state = Arc::new(RwLock::new(MicrowaveState::default()));
 
-            // Command channels (client side)
-            let (duet_cmd_tx, mut duet_cmd_rx) = mpsc::channel::<DuetCommand>(64);
-            let (mw_cmd_tx, mut mw_cmd_rx) = mpsc::channel::<MicrowaveCommand>(64);
+            // Command channels (mpsc end-to-end)
+            let (duet_cmd_tx, duet_cmd_rx) = mpsc::channel::<DuetCommand>(64);
+            let (mw_cmd_tx, mw_cmd_rx) = mpsc::channel::<MicrowaveCommand>(64);
 
-            // Device task channels (watch)
-            let (duet_tx, duet_rx) = watch::channel(DuetCommand{ command: String::from("INIT") });
-            let (microwave_tx, microwave_rx) = watch::channel(MicrowaveCommand{ command: String::from("INIT") });
-
-            // Forwarder tasks from mpsc -> watch.
-            // Extend here to add new command types and routing if needed.
-            tokio::spawn({
-                let duet_tx = duet_tx.clone();
-                async move {
-                    while let Some(cmd) = duet_cmd_rx.recv().await {
-                        let _ = duet_tx.send(cmd);
-                    }
-                }
-            });
-            tokio::spawn({
-                let microwave_tx = microwave_tx.clone();
-                async move {
-                    while let Some(cmd) = mw_cmd_rx.recv().await {
-                        let _ = microwave_tx.send(cmd);
-                    }
-                }
-            });
-
-            // Connect devices and spawn control tasks
             // Duet device task. Add protocol parsing, reconnection logic, and polling inside manager.
             tokio::spawn({
                 let state_for_task = Arc::clone(&duet_state);
@@ -114,7 +90,7 @@ impl AppUI {
                 async move {
                     match open_duet_connection(duet_ip).await {
                         Ok(duet_conn) => {
-                            if let Err(e) = crate::duet::manager::duet_control(duet_conn, duet_rx, state_for_task).await {
+                            if let Err(e) = crate::drivers::duet::duet_control(duet_conn, duet_cmd_rx, state_for_task).await {
                                 let mut s = state_for_err.write().unwrap();
                                 s.last_error = Some(format!("Duet task error: {}", e));
                                 s.connected = false;
@@ -139,7 +115,7 @@ impl AppUI {
                 async move {
                     match open_microwave_connection(MICROWAVE_SERIAL_PORT, MICROWAVE_BAUD_RATE).await {
                         Ok(mw_conn) => {
-                            if let Err(e) = crate::microwave::manager::microwave_control(mw_conn, microwave_rx, state_for_task).await {
+                            if let Err(e) = crate::drivers::microwave::microwave_control(mw_conn, mw_cmd_rx, state_for_task).await {
                                 let mut s = state_for_err.write().unwrap();
                                 s.last_error = Some(format!("Microwave task error: {}", e));
                                 s.connected = false;
@@ -167,8 +143,15 @@ impl AppUI {
 
 impl eframe::App for AppUI {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
+            ui.with_layout(
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    |ui| {
+                    ui.heading("TB1 Control Panel");
+                },
+            );
+        });
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Meteorite Jr Control Panel");
 
             if ui.button("Send Duet Command G28").clicked() {
                 self.duet.send_gcode("G28");
@@ -176,6 +159,18 @@ impl eframe::App for AppUI {
 
             if ui.button("Set Microwave Power 10W").clicked() {
                 self.microwave.set_power(10.0);
+            }
+
+            if ui.button("Home Extruder").clicked() {
+                self.duet.send_gcode("G92 Y0");
+            }
+
+            if ui.button("Send M200").clicked() {
+                self.duet.send_m_cmd("M200");
+            }
+
+            if ui.button("Send M201").clicked() {
+                self.duet.send_m_cmd("M201");
             }
 
             // Minimal state display

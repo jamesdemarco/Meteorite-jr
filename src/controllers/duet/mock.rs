@@ -68,4 +68,18 @@ impl DuetController for MockDuet {
     fn state(&self) -> DuetState {
         self.state.lock().unwrap().clone()
     }
+
+
+    fn send_m_cmd(&self, m_cmd: &str) {
+        let mut s = self.state.lock().unwrap();
+        if !s.connected {
+            s.last_error = Some("Duet not connected".into());
+            return;
+        }
+        s.last_error = None;
+        s.last_command = Some(m_cmd.to_string());
+        s.status = Some("busy".into());
+        // very simple simulation: just mark idle after "executing" the command
+        s.status = Some("idle".into());
+    }
 }

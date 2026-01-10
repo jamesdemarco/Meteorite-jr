@@ -17,6 +17,7 @@ pub trait DuetController: Send + Sync {
 	fn send_gcode(&self, gcode: &str);
 	// Snapshot of cached duet state.
 	fn state(&self) -> DuetState;
+    fn send_m_cmd(&self, m_cmd: &str);
 }
 
 /// Same non-blocking rules apply to the Microwave controller.

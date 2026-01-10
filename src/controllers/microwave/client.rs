@@ -23,14 +23,12 @@ impl MicrowaveController for MicrowaveClient {
     fn connect(&self) {
         let send_res = self
             .cmd_tx
-            .try_send(MicrowaveCommand { command: "CONNECT".into() });
+            .try_send(MicrowaveCommand::Connect);
         let mut s = self.state.write().unwrap();
         match send_res {
             Ok(_) => {
-                s.connected = true;
-                s.enabled = false;
                 s.last_error = None;
-                s.status = Some("connected".into());
+                s.status = Some("connecting...".into());
             }
             Err(e) => {
                 s.last_error = Some(format!("send failed: {}", e));
@@ -41,13 +39,11 @@ impl MicrowaveController for MicrowaveClient {
     fn disconnect(&self) {
         let send_res = self
             .cmd_tx
-            .try_send(MicrowaveCommand { command: "DISCONNECT".into() });
+            .try_send(MicrowaveCommand::Disconnect);
         let mut s = self.state.write().unwrap();
         match send_res {
             Ok(_) => {
-                s.connected = false;
-                s.enabled = false;
-                s.status = Some("disconnected".into());
+                s.status = Some("disconnecting...".into());
             }
             Err(e) => {
                 s.last_error = Some(format!("send failed: {}", e));
@@ -56,9 +52,7 @@ impl MicrowaveController for MicrowaveClient {
     }
 
     fn set_power(&self, watts: f32) {
-        let msg = MicrowaveCommand {
-            command: format!("SET_POWER {}", watts),
-        };
+        let msg = MicrowaveCommand::SetPower(watts);
         let send_res = self.cmd_tx.try_send(msg);
         let mut s = self.state.write().unwrap();
         match send_res {

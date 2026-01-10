@@ -83,7 +83,6 @@ pub async fn duet_control(
                             }
                         }
                     }
-
                     DuetCommand::SendMCommand(m_cmd) => {
                         // Treat as an M-command send
                         let write_res = duet_connection.write_all(m_cmd.as_bytes()).await;
@@ -118,9 +117,4 @@ pub async fn duet_control(
             }
         }
     }
-
-        
-
-
-        
 }

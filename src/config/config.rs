@@ -1,6 +1,5 @@
 
 
-
 pub const duet_ip: &str = "10.22.1.75";
 
 pub const MICROWAVE_SERIAL_PORT: &str = "/dev/ttyUSB0";
@@ -43,4 +42,7 @@ pub struct MicrowaveState {
     pub last_error: Option<String>,
     pub status: Option<String>,
     pub power_watts: f32,
+    pub vswr: Option<f32>,
+    pub forward_ratio: Option<f32>,
+    pub temperature_c: Option<f32>,
 }

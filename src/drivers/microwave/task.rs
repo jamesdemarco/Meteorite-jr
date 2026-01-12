@@ -18,13 +18,16 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
 use crate::config::config::{MicrowaveCommand, MicrowaveState};   
+use crate::utilities::utils::open_microwave_connection;
 
 
 pub async fn microwave_control(
-    mut microwave: SerialStream,
+    serial_port: &str,
+    baud_rate: u32,
     mut microwave_rx: mpsc::Receiver<MicrowaveCommand>,
     state: Arc<RwLock<MicrowaveState>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn: Option<SerialStream> = None;
     let mut tick = sleep(Duration::from_millis(200)); // ~5 Hz
     tokio::pin!(tick);
 
@@ -33,13 +36,26 @@ pub async fn microwave_control(
             Some(command) = microwave_rx.recv() => {
                 match command {
                     MicrowaveCommand::Connect => {
-                        let mut s = state.write().unwrap();
-                        s.connected = true;
-                        s.enabled = false;
-                        s.last_error = None;
-                        s.status = Some("connected".into());
+                        match open_microwave_connection(serial_port, baud_rate).await {
+                            Ok(stream) => {
+                                conn = Some(stream);
+                                let mut s = state.write().unwrap();
+                                s.connected = true;
+                                s.enabled = false;
+                                s.last_error = None;
+                                s.status = Some("connected".into());
+                            }
+                            Err(e) => {
+                                let mut s = state.write().unwrap();
+                                s.connected = false;
+                                s.enabled = false;
+                                s.last_error = Some(format!("connect failed: {}", e));
+                                s.status = Some("disconnected".into());
+                            }
+                        }
                     }
                     MicrowaveCommand::Disconnect => {
+                        conn = None;
                         let mut s = state.write().unwrap();
                         s.connected = false;
                         s.enabled = false;
@@ -47,12 +63,16 @@ pub async fn microwave_control(
                     }
                     MicrowaveCommand::SetPower(watts) => {
                         let watts = watts.max(0.0);
-                        // For now, optimistic update; actual serial write omitted
                         let mut s = state.write().unwrap();
-                        s.power_watts = watts;
-                        s.enabled = watts > 0.0;
-                        s.last_error = None;
-                        s.status = Some(if s.enabled { "heating".into() } else { "idle".into() });
+                        if conn.is_some() {
+                            // For now, optimistic update; actual serial write omitted
+                            s.power_watts = watts;
+                            s.enabled = watts > 0.0;
+                            s.last_error = None;
+                            s.status = Some(if s.enabled { "heating".into() } else { "idle".into() });
+                        } else {
+                            s.last_error = Some("not connected".into());
+                        }
                     }
                 }
             }

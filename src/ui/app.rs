@@ -578,7 +578,7 @@ impl AppUI {
                                 .add_filter("CSV", &["csv"])
                                 .pick_file()
                             {
-                                match crate::job::load_job_from_csv_path(&path, 1000) {
+                                match crate::job::load_job_from_csv_path(&path, 15_000) {
                                     Ok(job) => {
                                         self.toolpath_file_name = job.filename.clone();
                                         self.toolpath_row_count = job.row_count;

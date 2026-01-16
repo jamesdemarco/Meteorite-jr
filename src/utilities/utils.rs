@@ -10,28 +10,25 @@
 
 // imports
 
-//use crate::config::config::*;
-use std::net::SocketAddr;
-use tokio::net::TcpStream;
-use tokio_serial::{SerialStream};
+use tokio_serial::SerialStream;
 
 
 
-//function to open duet connection
-pub async fn open_duet_connection(
-    duet_ip_var: &str
-) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+//function to open duet connection (HTTP-based, URL helpers)
+pub fn duet_base_url(duet_ip: &str) -> String {
+    format!("http://{}", duet_ip)
+}
 
-    //let addr_str = duet_ip;
+pub fn rr_status_url(duet_ip: &str) -> String {
+    format!("http://{}/rr_status?type=2", duet_ip)
+}
 
-    // Try parsing as SocketAddr, otherwise append default port 23
-    let socket_addr: SocketAddr = match duet_ip_var.parse() {
-        Ok(a) => a,
-        Err(_) => format!("{}:23", duet_ip_var).parse()?,
-    };
-
-    let stream = TcpStream::connect(socket_addr).await?;
-    Ok(stream)
+pub fn rr_gcode_url(duet_ip: &str, gcode: &str) -> String {
+    format!(
+        "http://{}/rr_gcode?gcode={}",
+        duet_ip,
+        urlencoding::encode(gcode)
+    )
 }
 
 
@@ -52,11 +49,7 @@ pub async fn open_microwave_connection(
 
 
 // function to poll duet
-pub async fn poll_duet(duet_connection: &mut TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-
-    // probably adjust this to poll position 
-    //let mut buffer = [0; 1024];
-    //let n = duet_connection.read(&mut buffer).await?;
-    //let response = String::from_utf8_lossy(&buffer[..n]).to_string();
+pub async fn poll_duet() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Polling is now handled in the duet driver task via HTTP
     Ok(())
 }

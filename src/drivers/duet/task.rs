@@ -1,147 +1,161 @@
 /**
  * DUET Control module
  *
- * Task owns all hardware I/O. Extend here to:
- * - Parse protocol responses and update `DuetState` fields.
- * - Add reconnection logic on errors/timeouts.
- * - Add polling at 5–10 Hz to refresh position/status.
+ * Task owns all hardware I/O. Uses HTTP RRF3 endpoints instead of TCP/Telnet.
+ * - Uses reqwest::Client for HTTP requests
+ * - Polls rr_status for position and connection status
+ * - Sends G-code via rr_gcode endpoint
  *
  * UI must never block; commands arrive via an mpsc channel and
  * state updates write into `Arc<RwLock<DuetState>>` for fast snapshots.
  */
 
 // handles communication with the DUET 2 board
-// manages G-code sending and status receiving
+// manages G-code sending and status receiving via HTTP RRF3
 
-// use reqwest
-use tokio::time::{sleep, Duration};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::RwLock;
 use tokio::sync::mpsc;
-use crate::config::config::{DuetCommand, DuetState};
-use crate::utilities::utils::open_duet_connection;
+use tokio::time::{interval, Duration};
+use serde::Deserialize;
 
-use tokio::net::TcpStream;
-use tokio::io::AsyncWriteExt;
+use crate::config::config::{DuetCommand, DuetState};
+
+#[derive(Deserialize, Debug)]
+struct RrStatus {
+    status: String,
+    coords: Coords,
+}
+
+#[derive(Deserialize, Debug)]
+struct Coords {
+    xyz: [f32; 3],
+    #[serde(default)]
+    machine: [f32; 3],
+}
+
 pub async fn duet_control(
     duet_ip: &str,
-    mut duet_rx: mpsc::Receiver<DuetCommand>,
+    mut rx: mpsc::Receiver<DuetCommand>,
     state: Arc<RwLock<DuetState>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn: Option<TcpStream> = None;
-    let mut tick = sleep(Duration::from_millis(150)); // ~6-7 Hz
-    tokio::pin!(tick);
+) {
+    let client = reqwest::Client::new();
+    let mut connected = false;
+    let mut poll_interval = interval(Duration::from_millis(150)); // ~6-7 Hz
 
     loop {
         tokio::select! {
             // Handle incoming commands
-            Some(command) = duet_rx.recv() => {
-                match command {
+            Some(cmd) = rx.recv() => {
+                match cmd {
                     DuetCommand::Connect => {
-                        // Attempt to open connection
-                        match open_duet_connection(duet_ip).await {
-                            Ok(stream) => {
-                                conn = Some(stream);
+                        match client.get(crate::utilities::utils::rr_status_url(duet_ip)).send().await {
+                            Ok(_) => {
+                                connected = true;
                                 let mut s = state.write().unwrap();
                                 s.connected = true;
+                                s.status = Some("connected".to_string());
                                 s.last_error = None;
-                                s.status = Some("connected".into());
                             }
                             Err(e) => {
+                                connected = false;
                                 let mut s = state.write().unwrap();
                                 s.connected = false;
-                                s.last_error = Some(format!("connect failed: {}", e));
-                                s.status = Some("disconnected".into());
+                                s.status = Some("connection failed".to_string());
+                                s.last_error = Some(format!("Connect error: {}", e));
                             }
                         }
                     }
                     DuetCommand::Disconnect => {
-                        conn = None;
+                        connected = false;
                         let mut s = state.write().unwrap();
                         s.connected = false;
-                        s.status = Some("disconnected".into());
+                        s.status = Some("disconnected".to_string());
                     }
                     DuetCommand::SendGcode(gcode) => {
-                        if let Some(stream) = conn.as_mut() {
-                            let write_res = stream.write_all(gcode.as_bytes()).await;
-                            match write_res {
+                        if !connected {
+                            let mut s = state.write().unwrap();
+                            s.last_error = Some("not connected".to_string());
+                        } else {
+                            let url = crate::utilities::utils::rr_gcode_url(duet_ip, &gcode);
+                            match client.get(&url).send().await {
                                 Ok(_) => {
                                     let mut s = state.write().unwrap();
-                                    s.last_error = None;
                                     s.last_command = Some(gcode.clone());
-                                    s.status = Some("busy".into());
-                                    let g = gcode.to_uppercase();
-                                    if g.starts_with("G28") {
-                                        s.position = [0.0, 0.0, 0.0];
-                                        s.status = Some("idle".into());
-                                    } else if g.starts_with("G0") || g.starts_with("G1") {
-                                        let mut pos = s.position;
-                                        for tok in g.split_whitespace() {
-                                            if let Some(val) = tok.strip_prefix('X') {
-                                                if let Ok(v) = val.parse::<f32>() { pos[0] = v; }
-                                            } else if let Some(val) = tok.strip_prefix('Y') {
-                                                if let Ok(v) = val.parse::<f32>() { pos[1] = v; }
-                                            } else if let Some(val) = tok.strip_prefix('Z') {
-                                                if let Ok(v) = val.parse::<f32>() { pos[2] = v; }
-                                            }
-                                        }
-                                        s.position = pos;
-                                        s.status = Some("idle".into());
-                                    } else {
-                                        s.status = Some("idle".into());
-                                    }
+                                    s.last_error = None;
                                 }
                                 Err(e) => {
+                                    connected = false;
                                     let mut s = state.write().unwrap();
-                                    s.last_error = Some(format!("I/O error: {}", e));
+                                    s.status = Some("error".to_string());
+                                    s.last_error = Some(format!("Gcode error: {}", e));
                                     s.connected = false;
-                                    s.status = Some("error".into());
-                                    drop(s);
-                                    conn = None;
                                 }
                             }
-                        } else {
-                            let mut s = state.write().unwrap();
-                            s.last_error = Some("not connected".into());
                         }
                     }
                     DuetCommand::SendMCommand(m_cmd) => {
-                        if let Some(stream) = conn.as_mut() {
-                            let write_res = stream.write_all(m_cmd.as_bytes()).await;
-                            match write_res {
+                        if !connected {
+                            let mut s = state.write().unwrap();
+                            s.last_error = Some("not connected".to_string());
+                        } else {
+                            let url = crate::utilities::utils::rr_gcode_url(duet_ip, &m_cmd);
+                            match client.get(&url).send().await {
                                 Ok(_) => {
                                     let mut s = state.write().unwrap();
-                                    s.last_error = None;
                                     s.last_command = Some(m_cmd.clone());
-                                    s.status = Some("busy".into());
-                                    s.status = Some("idle".into());
+                                    s.last_error = None;
                                 }
                                 Err(e) => {
+                                    connected = false;
                                     let mut s = state.write().unwrap();
-                                    s.last_error = Some(format!("I/O error: {}", e));
+                                    s.status = Some("error".to_string());
+                                    s.last_error = Some(format!("M-command error: {}", e));
                                     s.connected = false;
-                                    s.status = Some("error".into());
-                                    drop(s);
-                                    conn = None;
                                 }
                             }
-                        } else {
-                            let mut s = state.write().unwrap();
-                            s.last_error = Some("not connected".into());
                         }
                     }
                 }
             }
 
-            // Periodic status update (simulated)
-            _ = &mut tick => {
-                let mut s = state.write().unwrap();
-                if s.connected {
-                    // Without protocol detail, mark as simulated/unknown
-                    if s.status.is_none() || s.status.as_deref() == Some("idle") {
-                        s.status = Some("Simulated/Unknown".into());
+            // Polling tick
+            _ = poll_interval.tick() => {
+                if connected {
+                    match client.get(crate::utilities::utils::rr_status_url(duet_ip)).send().await {
+                        Ok(resp) => {
+                            match resp.json::<RrStatus>().await {
+                                Ok(status) => {
+                                    let mut s = state.write().unwrap();
+                                    s.position = status.coords.xyz;
+                                    s.status = Some(match status.status.as_str() {
+                                        "I" => "idle".to_string(),
+                                        "P" => "printing".to_string(),
+                                        "S" => "stopped".to_string(),
+                                        "H" => "halted".to_string(),
+                                        "D" => "pausing".to_string(),
+                                        other => other.to_string(),
+                                    });
+                                    s.last_error = None;
+                                }
+                                Err(e) => {
+                                    connected = false;
+                                    let mut s = state.write().unwrap();
+                                    s.connected = false;
+                                    s.status = Some("parse error".to_string());
+                                    s.last_error = Some(format!("JSON parse: {}", e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            connected = false;
+                            let mut s = state.write().unwrap();
+                            s.connected = false;
+                            s.status = Some("offline".to_string());
+                            s.last_error = Some(format!("Poll error: {}", e));
+                        }
                     }
                 }
-                tick.as_mut().reset(tokio::time::Instant::now() + Duration::from_millis(150));
             }
         }
     }

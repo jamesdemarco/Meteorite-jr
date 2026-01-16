@@ -1,6 +1,6 @@
 
 
-pub const duet_ip: &str = "10.22.1.75";
+pub const duet_ip: &str = "192.168.10.2";
 
 pub const MICROWAVE_SERIAL_PORT: &str = "/dev/ttyUSB0";
 pub const MICROWAVE_BAUD_RATE: u32 = 9600;

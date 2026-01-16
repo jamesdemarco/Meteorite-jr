@@ -170,8 +170,9 @@ impl AppUI {
             // Duet device task. Connect only on command.
             tokio::spawn({
                 let state_for_task = Arc::clone(&duet_state);
+                let ip = duet_ip.to_string();
                 async move {
-                    let _ = crate::drivers::duet::duet_control(duet_ip, duet_cmd_rx, state_for_task).await;
+                    crate::drivers::duet::duet_control(&ip, duet_cmd_rx, state_for_task).await;
                 }
             });
 

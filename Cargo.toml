@@ -10,9 +10,14 @@ default = ["real"]
 
 [dependencies]
 chrono = "0.4.42"
+csv = "1"
 eframe = "0.33.3"
 egui = "0.33.3"
 egui_plot = "0.34.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "native-tls"] }
+rfd = "0.14"
+serialport = { version = "4.7.0", default-features = false, features = ["serde"] }
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-serial = "5.4.5"
+minicircuit_commands = { git = "https://github.com/raven-space-systems/minicircuit-api.git", package = "minicircuit_commands", rev = "0d106ef3812d1f9c3ccdf53ffd86560fd39c61f5" }
+minicircuit_driver = { git = "https://github.com/raven-space-systems/minicircuit-api.git", package = "minicircuit_driver", rev = "0d106ef3812d1f9c3ccdf53ffd86560fd39c61f5", default-features = false, features = ["driver"] }

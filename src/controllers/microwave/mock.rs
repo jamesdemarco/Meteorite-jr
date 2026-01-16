@@ -40,8 +40,38 @@ impl MicrowaveController for MockMicrowave {
         }
         s.last_error = None;
         s.power_watts = watts.max(0.0);
-        s.enabled = s.power_watts > 0.0;
-        s.status = Some(if s.enabled { "heating".into() } else { "idle".into() });
+    }
+
+    fn set_frequency(&self, _hz: i32) {
+        let mut s = self.state.lock().unwrap();
+        if !s.connected {
+            s.last_error = Some("Microwave not connected".into());
+            return;
+        }
+        s.last_error = None;
+        // Mock doesn't actually track frequency
+    }
+
+    fn rf_on(&self) {
+        let mut s = self.state.lock().unwrap();
+        if !s.connected {
+            s.last_error = Some("Microwave not connected".into());
+            return;
+        }
+        s.last_error = None;
+        s.enabled = true;
+        s.status = Some("RF on".into());
+    }
+
+    fn rf_off(&self) {
+        let mut s = self.state.lock().unwrap();
+        if !s.connected {
+            s.last_error = Some("Microwave not connected".into());
+            return;
+        }
+        s.last_error = None;
+        s.enabled = false;
+        s.status = Some("RF off".into());
     }
 
     fn state(&self) -> MicrowaveState {

@@ -1,0 +1,83 @@
+﻿cargo :    Compiling Meteorite-jr v0.1.0 (C:\Users\JamesDeMarco\Developer\Meteorite-jr)
+At line:1 char:1
++ cargo build --features mock 2>&1 | Out-File -FilePath "build_output.t ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling Me...r\Meteorite-jr):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+error[E0603]: struct `BaudRate` is private
+  --> src\config\config.rs:12:65
+   |
+12 |     use minicircuit_commands::properties::{VendorId, ProductId, BaudRate};
+   |                                                                 ^^^^^^^^ private struct
+   |
+note: the struct `BaudRate` is defined here
+  --> C:\Users\JamesDeMarco\.cargo\git\checkouts\minicircuit-api-6f20a66da3d052a6\0d106ef\minicircuit\commands\src\properties.rs:3:5
+   |
+3  | use crate::prelude::BaudRate;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+help: import `BaudRate` directly
+   |
+12 |     use minicircuit_commands::properties::{VendorId, ProductId, minicircuit_commands::data_types::types::BaudRate};
+   |                                                                 +++++++++++++++++++++++++++++++++++++++++
+
+warning: unused import: `crate::config::config::*`
+  --> src\main.rs:19:5
+   |
+19 | use crate::config::config::*;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `duet_connection`
+  --> src\utilities\utils.rs:55:24
+   |
+55 | pub async fn poll_duet(duet_connection: &mut TcpStream) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+   |                        ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_duet_connection`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: variable does not need to be mutable
+  --> src\drivers\duet\task.rs:31:9
+   |
+31 |     let mut tick = sleep(Duration::from_millis(150)); // ~6-7 Hz
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+  --> src\drivers\microwave\task.rs:31:9
+   |
+31 |     let mut tick = sleep(Duration::from_millis(200)); // ~5 Hz
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: unreachable expression
+   --> src\ui\app.rs:108:9
+    |
+92  | /             return Self {
+93  | |                 duet,
+94  | |                 microwave,
+95  | |                 duet_pending: None,
+...   |
+103 | |                 duet_custom_gcode: String::new(),
+104 | |             };
+    | |_____________- any code following this expression is unreachable
+...
+108 | /         {
+109 | |             // Shared state
+110 | |             let duet_state = Arc::new(RwLock::new(DuetState::default()));
+111 | |             let microwave_state = Arc::new(RwLock::new(MicrowaveState::default()));
+...   |
+147 | |             };
+148 | |         }
+    | |_________^ unreachable expression
+    |
+    = note: `#[warn(unreachable_code)]` on by default
+
+For more information about this error, try `rustc --explain E0603`.
+warning: `Meteorite-jr` (bin "Meteorite-jr") generated 5 warnings
+error: could not compile `Meteorite-jr` (bin "Meteorite-jr") due to 1 previous error; 5 warnings emitted

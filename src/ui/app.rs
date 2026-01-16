@@ -33,14 +33,17 @@
 // imports
 
 use crate::config::config::*;
-use crate::controllers::{DuetController, MicrowaveController};
+use crate::controllers::{DuetController, MicrowaveController, ArduinoController};
 #[cfg(feature="mock")] use crate::controllers::duet::MockDuet;
 #[cfg(feature="mock")] use crate::controllers::microwave::MockMicrowave;
+#[cfg(feature="mock")] use crate::controllers::arduino::MockArduino;
 #[cfg(feature="real")] use crate::controllers::duet::DuetClient;
 #[cfg(feature="real")] use crate::controllers::microwave::MicrowaveClient;
+#[cfg(feature="real")] use crate::controllers::arduino::ArduinoClient;
 // In real mode, device tasks are spawned immediately but connect only on command
-#[cfg(feature="real")] use tokio::sync::mpsc;
-#[cfg(feature="real")] use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc;
+use std::sync::{Arc, RwLock};
+use crate::print_engine::{PrintCommand, PrintState, print_engine_task};
 use eframe::egui;
 use std::time::Instant;
 //use egui_plot::Legend;
@@ -71,15 +74,29 @@ struct PendingRequest {
 pub struct AppUI{
     pub duet: Box<dyn DuetController + Send + Sync>,
     pub microwave: Box<dyn MicrowaveController + Send + Sync>,
+    pub arduino: Box<dyn ArduinoController + Send + Sync>,
     duet_pending: Option<PendingRequest>,
     microwave_pending: Option<PendingRequest>,
-    // UI-only setpoints
-    microwave_power_setpoint: f32,
+    arduino_pending: Option<PendingRequest>,
+    // Print engine
+    print_cmd_tx: mpsc::Sender<PrintCommand>,
+    print_state: Arc<RwLock<PrintState>>,
+    // Shared setpoints (used by both UI and print engine)
+    microwave_power_setpoint: Arc<RwLock<f32>>,
     microwave_freq_setpoint: i32,
+    arduino_pressure_setpoint: Arc<RwLock<f32>>,
     duet_x_step: f32,
     duet_y_step: f32,
     duet_z_step: f32,
     duet_custom_gcode: String,
+    // Toolpath creation fields
+    toolpath_file_name: String,
+    toolpath_parse_error: String,
+    toolpath_row_count: usize,
+    toolpath_start_x: f32,
+    toolpath_start_y: f32,
+    toolpath_start_z: f32,
+    current_job: Option<std::sync::Arc<crate::job::Job>>,
 }
 
 impl AppUI {
@@ -88,17 +105,53 @@ impl AppUI {
         {
             let duet: Box<dyn DuetController + Send + Sync> = Box::new(MockDuet::new());
             let microwave: Box<dyn MicrowaveController + Send + Sync> = Box::new(MockMicrowave::new());
+            let arduino: Box<dyn ArduinoController + Send + Sync> = Box::new(MockArduino::new());
+            
+            // Print engine setup
+            let (print_cmd_tx, print_cmd_rx) = mpsc::channel::<PrintCommand>(64);
+            let print_state = Arc::new(RwLock::new(PrintState::default()));
+            let microwave_power_setpoint = Arc::new(RwLock::new(0.0f32));
+            let arduino_pressure_setpoint = Arc::new(RwLock::new(0.0f32));
+            
+            // Controllers for print engine (wrap boxes in Arc)
+            let duet_arc: Arc<Box<dyn DuetController + Send + Sync>> = Arc::new(Box::new(MockDuet::new()));
+            let microwave_arc: Arc<Box<dyn MicrowaveController + Send + Sync>> = Arc::new(Box::new(MockMicrowave::new()));
+            let arduino_arc: Arc<Box<dyn ArduinoController + Send + Sync>> = Arc::new(Box::new(MockArduino::new()));
+            
+            // Spawn print engine task
+            tokio::spawn(print_engine_task(
+                print_cmd_rx,
+                Arc::clone(&print_state),
+                duet_arc,
+                microwave_arc,
+                arduino_arc,
+                Arc::clone(&microwave_power_setpoint),
+                Arc::clone(&arduino_pressure_setpoint),
+            ));
+            
             return Self {
                 duet,
                 microwave,
+                arduino,
                 duet_pending: None,
                 microwave_pending: None,
-                microwave_power_setpoint: 0.0,
+                arduino_pending: None,
+                print_cmd_tx,
+                print_state,
+                microwave_power_setpoint,
                 microwave_freq_setpoint: 0,
+                arduino_pressure_setpoint,
                 duet_x_step: 0.0,
                 duet_y_step: 0.0,
                 duet_z_step: 0.0,
                 duet_custom_gcode: String::new(),
+                toolpath_file_name: String::new(),
+                toolpath_parse_error: String::new(),
+                toolpath_row_count: 0,
+                toolpath_start_x: 0.0,
+                toolpath_start_y: 0.0,
+                toolpath_start_z: 0.0,
+                current_job: None,
             };
         }
 
@@ -107,10 +160,12 @@ impl AppUI {
             // Shared state
             let duet_state = Arc::new(RwLock::new(DuetState::default()));
             let microwave_state = Arc::new(RwLock::new(MicrowaveState::default()));
+            let arduino_state = Arc::new(RwLock::new(ArduinoState::default()));
 
             // Command channels (mpsc end-to-end)
             let (duet_cmd_tx, duet_cmd_rx) = mpsc::channel::<DuetCommand>(64);
             let (mw_cmd_tx, mw_cmd_rx) = mpsc::channel::<MicrowaveCommand>(64);
+            let (arduino_cmd_tx, arduino_cmd_rx) = mpsc::channel::<ArduinoCommand>(64);
 
             // Duet device task. Connect only on command.
             tokio::spawn({
@@ -128,19 +183,63 @@ impl AppUI {
                 }
             });
 
-            let duet: Box<dyn DuetController + Send + Sync> = Box::new(DuetClient::new(duet_cmd_tx, duet_state));
-            let microwave: Box<dyn MicrowaveController + Send + Sync> = Box::new(MicrowaveClient::new(mw_cmd_tx, microwave_state));
+            // Arduino device task. Connect only on command.
+            tokio::spawn({
+                let state_for_task = Arc::clone(&arduino_state);
+                async move {
+                    let _ = crate::drivers::arduino::task::arduino_control(ARDUINO_SERIAL_PORT, ARDUINO_BAUD_RATE, arduino_cmd_rx, state_for_task).await;
+                }
+            });
+
+            let duet: Box<dyn DuetController + Send + Sync> = Box::new(DuetClient::new(duet_cmd_tx.clone(), Arc::clone(&duet_state)));
+            let microwave: Box<dyn MicrowaveController + Send + Sync> = Box::new(MicrowaveClient::new(mw_cmd_tx.clone(), Arc::clone(&microwave_state)));
+            let arduino: Box<dyn ArduinoController + Send + Sync> = Box::new(ArduinoClient::new(arduino_cmd_tx.clone(), Arc::clone(&arduino_state)));
+            
+            // Print engine setup
+            let (print_cmd_tx, print_cmd_rx) = mpsc::channel::<PrintCommand>(64);
+            let print_state = Arc::new(RwLock::new(PrintState::default()));
+            let microwave_power_setpoint = Arc::new(RwLock::new(0.0f32));
+            let arduino_pressure_setpoint = Arc::new(RwLock::new(0.0f32));
+            
+            // Controllers for print engine (wrap boxes in Arc)
+            let duet_arc: Arc<Box<dyn DuetController + Send + Sync>> = Arc::new(Box::new(DuetClient::new(duet_cmd_tx, Arc::clone(&duet_state))));
+            let microwave_arc: Arc<Box<dyn MicrowaveController + Send + Sync>> = Arc::new(Box::new(MicrowaveClient::new(mw_cmd_tx, Arc::clone(&microwave_state))));
+            let arduino_arc: Arc<Box<dyn ArduinoController + Send + Sync>> = Arc::new(Box::new(ArduinoClient::new(arduino_cmd_tx, Arc::clone(&arduino_state))));
+            
+            // Spawn print engine task
+            tokio::spawn(print_engine_task(
+                print_cmd_rx,
+                Arc::clone(&print_state),
+                duet_arc,
+                microwave_arc,
+                arduino_arc,
+                Arc::clone(&microwave_power_setpoint),
+                Arc::clone(&arduino_pressure_setpoint),
+            ));
+            
             return Self {
                 duet,
                 microwave,
+                arduino,
                 duet_pending: None,
                 microwave_pending: None,
-                microwave_power_setpoint: 0.0,
+                arduino_pending: None,
+                print_cmd_tx,
+                print_state,
+                microwave_power_setpoint,
                 microwave_freq_setpoint: 0,
+                arduino_pressure_setpoint,
                 duet_x_step: 0.0,
                 duet_y_step: 0.0,
                 duet_z_step: 0.0,
                 duet_custom_gcode: String::new(),
+                toolpath_file_name: String::new(),
+                toolpath_parse_error: String::new(),
+                toolpath_row_count: 0,
+                toolpath_start_x: 0.0,
+                toolpath_start_y: 0.0,
+                toolpath_start_z: 0.0,
+                current_job: None,
             };
         }
     }
@@ -158,15 +257,20 @@ impl AppUI {
     }
 
     // Stub method for sending microwave frequency command
-    fn send_microwave_set_frequency(&mut self, _hz: i32) {
-        // TODO: implement frequency control in microwave controller
+    fn send_microwave_set_frequency(&mut self, hz: i32) {
+        self.microwave.set_frequency(hz);
     }
 
     // Render microwave control section
     fn ui_center_microwave(&mut self, ui: &mut egui::Ui) {
         let microwave_state = self.microwave.state();
+        let panel_h = 165.0;
 
         ui.add_enabled_ui(microwave_state.connected, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(),panel_h),
+                egui::Layout::top_down(egui::Align::Min),
+        |ui| {
             egui::Frame::group(ui.style())
                 .show(ui, |ui| {
                     ui.heading("Microwave Control");
@@ -179,18 +283,29 @@ impl AppUI {
                             // Power row
                             ui.label("Power (W)");
                             if ui.button("-5").clicked() {
-                                self.microwave_power_setpoint = (self.microwave_power_setpoint - 5.0).max(0.0);
+                                let new_val = {
+                                    let mut sp = self.microwave_power_setpoint.write().unwrap();
+                                    *sp = (*sp - 5.0).max(0.0);
+                                    *sp
+                                };
                                 if microwave_state.enabled {
-                                    self.send_microwave_set_power(self.microwave_power_setpoint);
+                                    self.send_microwave_set_power(new_val);
                                 }
                             }
-                            ui.add(egui::DragValue::new(&mut self.microwave_power_setpoint)
+                            let mut power_val = self.microwave_power_setpoint.read().unwrap().clone();
+                            if ui.add(egui::DragValue::new(&mut power_val)
                                 .speed(1.0)
-                                .range(0.0..=f32::INFINITY));
+                                .range(0.0..=f32::INFINITY)).changed() {
+                                *self.microwave_power_setpoint.write().unwrap() = power_val;
+                            }
                             if ui.button("+5").clicked() {
-                                self.microwave_power_setpoint = (self.microwave_power_setpoint + 5.0).max(0.0);
+                                let new_val = {
+                                    let mut sp = self.microwave_power_setpoint.write().unwrap();
+                                    *sp = (*sp + 5.0).max(0.0);
+                                    *sp
+                                };
                                 if microwave_state.enabled {
-                                    self.send_microwave_set_power(self.microwave_power_setpoint);
+                                    self.send_microwave_set_power(new_val);
                                 }
                             }
                             ui.end_row();
@@ -215,7 +330,7 @@ impl AppUI {
                             ui.end_row();
                         });
 
-                    ui.add_space(10.0);
+                    //ui.add_space(10.0);
 
                     // ON/OFF button
                     // ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
@@ -238,15 +353,102 @@ impl AppUI {
                         let button = egui::Button::new(button_label);
                         if ui.add_sized([200.0, 40.0], button).clicked() {
                             if microwave_state.enabled {
-                                self.send_microwave_set_power(0.0);
-                                } else {
-                                self.send_microwave_set_power(self.microwave_power_setpoint);
+                                // Turn OFF
+                                self.microwave.rf_off();
+                            } else {
+                                // Turn ON with current setpoint
+                                let power_sp = *self.microwave_power_setpoint.read().unwrap();
+                                self.microwave.set_power(power_sp);
+                                self.microwave.rf_on();
                             }
                         }
                     });
                 });
-        });
-    }
+            },
+        );
+    });
+}
+
+    // Render pressure control section
+    fn ui_center_pressure(&mut self, ui: &mut egui::Ui) {
+        let arduino_state = self.arduino.state();
+        let panel_w = 360.0;
+        let panel_h = 165.0;
+
+        ui.add_enabled_ui(arduino_state.connected, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(panel_w, panel_h),
+                egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                egui::Frame::group(ui.style())
+                    .show(ui, |ui| {
+                        ui.heading("Pressure Control");
+                        ui.add_space(5.0);
+
+                        egui::Grid::new("pressure_grid")
+                            .num_columns(4)
+                            .spacing([10.0, 8.0])
+                            .show(ui, |ui| {
+                                // Pressure row
+                                ui.label("Pressure (psi)");
+                                if ui.button("-1").clicked() {
+                                    let new_val = {
+                                        let mut sp = self.arduino_pressure_setpoint.write().unwrap();
+                                        *sp = (*sp - 1.0).max(0.0);
+                                        *sp
+                                    };
+                                    if arduino_state.enabled {
+                                        self.arduino.set_pressure_setpoint(new_val);
+                                    }
+                                }
+                                let mut pressure_val = self.arduino_pressure_setpoint.read().unwrap().clone();
+                                if ui.add(egui::DragValue::new(&mut pressure_val)
+                                    .speed(0.1)
+                                    .range(0.0..=f32::INFINITY)).changed() {
+                                    *self.arduino_pressure_setpoint.write().unwrap() = pressure_val;
+                                }
+                                if ui.button("+1").clicked() {
+                                    let new_val = {
+                                        let mut sp = self.arduino_pressure_setpoint.write().unwrap();
+                                        *sp = (*sp + 1.0).max(0.0);
+                                        *sp
+                                    };
+                                    if arduino_state.enabled {
+                                        self.arduino.set_pressure_setpoint(new_val);
+                                    }
+                                }
+                                ui.end_row();
+
+                                // Row 2: current pressure readback (gauge)
+                                ui.label("Current Pressure:");
+                                ui.label(format!("{:.1} psi", arduino_state.pressure_measured_psi));
+                                ui.label(""); // spacer to fill columns 3-4
+                                ui.label("");
+                                ui.end_row();
+                            });
+
+                        ui.add_space(8.0);
+                        ui.horizontal_centered(|ui| {
+                            let button_label = if arduino_state.enabled { "ON" } else { "OFF" };
+                            let button = egui::Button::new(button_label);
+                            if ui.add_sized([200.0, 40.0], button).clicked() {
+                                if arduino_state.enabled {
+                                    // Turn OFF
+                                    self.arduino.set_pressure_setpoint(0.0);
+                                    self.arduino.enable(false);
+                                } else {
+                                    // Turn ON with current setpoint
+                                    let pressure_sp = *self.arduino_pressure_setpoint.read().unwrap();
+                                    self.arduino.set_pressure_setpoint(pressure_sp);
+                                    self.arduino.enable(true);
+                                }
+                            }
+                        });
+                    });
+            },
+        );
+    });
+}
 
     // Render duet control section (jog + send)
     fn ui_center_duet(&mut self, ui: &mut egui::Ui) {
@@ -358,6 +560,202 @@ impl AppUI {
         });
     }
 
+    // Render toolpath creation section
+    fn ui_toolpath_creation(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style())
+            .show(ui, |ui| {
+                ui.heading("Toolpath Creation");
+                ui.add_space(5.0);
+
+                egui::Grid::new("toolpath_grid")
+                    .num_columns(3)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        // Row 1: Upload button, filename display, Clear button
+                        if ui.button("Upload File").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("CSV", &["csv"])
+                                .pick_file()
+                            {
+                                match crate::job::load_job_from_csv_path(&path, 1000) {
+                                    Ok(job) => {
+                                        self.toolpath_file_name = job.filename.clone();
+                                        self.toolpath_row_count = job.row_count;
+                                        if let Some(step) = job.first_step.clone() {
+                                            self.toolpath_start_x = step.x_mm;
+                                            self.toolpath_start_y = step.y_mm;
+                                            self.toolpath_start_z = step.z_mm;
+                                        } else {
+                                            self.toolpath_start_x = 0.0;
+                                            self.toolpath_start_y = 0.0;
+                                            self.toolpath_start_z = 0.0;
+                                        }
+                                        self.toolpath_parse_error.clear();
+                                        self.current_job = Some(std::sync::Arc::new(job));
+                                    }
+                                    Err(e) => {
+                                        self.toolpath_parse_error = e.to_string();
+                                        self.toolpath_file_name.clear();
+                                        self.toolpath_row_count = 0;
+                                        self.toolpath_start_x = 0.0;
+                                        self.toolpath_start_y = 0.0;
+                                        self.toolpath_start_z = 0.0;
+                                        self.current_job = None;
+                                    }
+                                }
+                            }
+                        }
+
+                        let mut filename_display = self.toolpath_file_name.clone();
+                        ui.add_sized(
+                            [(ui.available_width() - 100.0).max(100.0), 24.0],
+                            egui::TextEdit::singleline(&mut filename_display).interactive(false),
+                        );
+
+                        if ui.button("Clear").clicked() {
+                            self.toolpath_file_name.clear();
+                            self.toolpath_parse_error.clear();
+                            self.toolpath_row_count = 0;
+                            self.toolpath_start_x = 0.0;
+                            self.toolpath_start_y = 0.0;
+                            self.toolpath_start_z = 0.0;
+                            self.current_job = None;
+                        }
+                        ui.end_row();
+
+                        // Row 2: Parse errors
+                        ui.label("Parse Errors:");
+                        let mut error_display = self.toolpath_parse_error.clone();
+                        ui.add_sized(
+                            [(ui.available_width()).max(100.0), 24.0],
+                            egui::TextEdit::singleline(&mut error_display).interactive(false),
+                        );
+                        ui.label(""); // Empty cell for alignment
+                        ui.end_row();
+
+                        // Row 3: Starting Position
+                        ui.label("Starting Position:");
+                        ui.horizontal(|ui| {
+                            ui.label("X:");
+                            let mut x_display = format!("{:.3}", self.toolpath_start_x);
+                            ui.add_sized(
+                                [80.0, 24.0],
+                                egui::TextEdit::singleline(&mut x_display).interactive(false),
+                            );
+                            ui.label("Y:");
+                            let mut y_display = format!("{:.3}", self.toolpath_start_y);
+                            ui.add_sized(
+                                [80.0, 24.0],
+                                egui::TextEdit::singleline(&mut y_display).interactive(false),
+                            );
+                            ui.label("Z:");
+                            let mut z_display = format!("{:.3}", self.toolpath_start_z);
+                            ui.add_sized(
+                                [80.0, 24.0],
+                                egui::TextEdit::singleline(&mut z_display).interactive(false),
+                            );
+                        });
+                        ui.label(""); // Empty cell for alignment
+                        ui.end_row();
+
+                        // Row 4: Row Count
+                        ui.label("Row Count:");
+                        let mut count_display = format!("{}", self.toolpath_row_count);
+                        ui.add_sized(
+                            [150.0, 24.0],
+                            egui::TextEdit::singleline(&mut count_display).interactive(false),
+                        );
+                        ui.label(""); // Empty cell for alignment
+                        ui.end_row();
+                    });
+            });
+    }
+
+    // Render print controls section
+    fn ui_print_controls(&mut self, ui: &mut egui::Ui) {
+        // Panel enabled only if job loaded and duet connected
+        let has_job = self.current_job.is_some();
+        let duet_connected = self.duet.state().connected;
+        let panel_enabled = has_job && duet_connected;
+
+        ui.add_enabled_ui(panel_enabled, |ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.heading("Print Controls");
+                ui.add_space(8.0);
+
+                // Read current print state
+                let ps = self.print_state.read().unwrap().clone();
+
+                // Button enable states based on PrintStatus
+                let (start_enabled, pause_enabled, resume_enabled, abort_enabled) = match ps.status {
+                    crate::print_engine::PrintStatus::Idle => (true, false, false, false),
+                    crate::print_engine::PrintStatus::Printing => (false, true, false, true),
+                    crate::print_engine::PrintStatus::Paused => (false, false, true, true),
+                };
+
+                // Row of control buttons
+                ui.horizontal(|ui| {
+                    // Start button
+                    if ui.add_enabled(start_enabled, egui::Button::new("Start")).clicked() {
+                        if let Some(ref job) = self.current_job {
+                            let cmd = crate::print_engine::PrintCommand::Start(Arc::clone(job));
+                            if let Err(e) = self.print_cmd_tx.try_send(cmd) {
+                                // Could set error in state, but for now just log
+                                eprintln!("Failed to send Start command: {}", e);
+                            }
+                        }
+                    }
+
+                    // Pause button
+                    if ui.add_enabled(pause_enabled, egui::Button::new("Pause")).clicked() {
+                        let cmd = crate::print_engine::PrintCommand::Pause;
+                        if let Err(e) = self.print_cmd_tx.try_send(cmd) {
+                            eprintln!("Failed to send Pause command: {}", e);
+                        }
+                    }
+
+                    // Resume button
+                    if ui.add_enabled(resume_enabled, egui::Button::new("Resume")).clicked() {
+                        let cmd = crate::print_engine::PrintCommand::Resume;
+                        if let Err(e) = self.print_cmd_tx.try_send(cmd) {
+                            eprintln!("Failed to send Resume command: {}", e);
+                        }
+                    }
+
+                    // Abort button
+                    if ui.add_enabled(abort_enabled, egui::Button::new("Abort")).clicked() {
+                        let cmd = crate::print_engine::PrintCommand::Abort;
+                        if let Err(e) = self.print_cmd_tx.try_send(cmd) {
+                            eprintln!("Failed to send Abort command: {}", e);
+                        }
+                    }
+                });
+
+                ui.add_space(8.0);
+
+                // Status display
+                ui.horizontal(|ui| {
+                    ui.label("Status:");
+                    let last_gcode_display = ps.last_gcode.as_deref().unwrap_or("—");
+                    let status_text = format!(
+                        "{:?}  step {}/{}  last: {}",
+                        ps.status, ps.current_index, ps.total_steps, last_gcode_display
+                    );
+                    ui.label(status_text);
+                });
+
+                // Display last error if present
+                if let Some(ref error) = ps.last_error {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Error:");
+                        ui.colored_label(egui::Color32::RED, error);
+                    });
+                }
+            });
+        });
+    }
+
     // Update pending request state, clearing when confirmed or timed out (8 seconds)
     fn update_pending_requests(&mut self) {
         const TIMEOUT_SECS: u64 = 8;
@@ -386,6 +784,19 @@ impl AppUI {
             };
             if should_clear {
                 self.microwave_pending = None;
+            }
+        }
+
+        // Arduino pending
+        if let Some(ref pending) = self.arduino_pending {
+            let elapsed = now.duration_since(pending.started_at).as_secs();
+            let state = self.arduino.state();
+            let should_clear = match pending.action {
+                PendingAction::Connect => state.connected || elapsed > TIMEOUT_SECS,
+                PendingAction::Disconnect => !state.connected || elapsed > TIMEOUT_SECS,
+            };
+            if should_clear {
+                self.arduino_pending = None;
             }
         }
     }
@@ -478,6 +889,49 @@ impl AppUI {
                         ui.label(status);
                     }
                     if let Some(ref err) = microwave_state.last_error {
+                        ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
+                    }
+                });
+
+                ui.add_space(10.0);
+
+                // Arduino section
+                ui.group(|ui| {
+                    ui.label("Arduino (Pressure)");
+                    let arduino_state = self.arduino.state();
+                    let (button_label, button_enabled) = if let Some(ref pending) = self.arduino_pending {
+                        match pending.action {
+                            PendingAction::Connect => ("Connecting…", false),
+                            PendingAction::Disconnect => ("Disconnecting…", false),
+                        }
+                    } else if arduino_state.connected {
+                        ("Disconnect", true)
+                    } else {
+                        ("Connect", true)
+                    };
+
+                    let button = egui::Button::new(button_label)
+                        .min_size(egui::vec2(ui.available_width(), 44.0));
+                    if ui.add_enabled(button_enabled, button).clicked() {
+                        if arduino_state.connected {
+                            self.arduino.disconnect();
+                            self.arduino_pending = Some(PendingRequest {
+                                action: PendingAction::Disconnect,
+                                started_at: Instant::now(),
+                            });
+                        } else {
+                            self.arduino.connect();
+                            self.arduino_pending = Some(PendingRequest {
+                                action: PendingAction::Connect,
+                                started_at: Instant::now(),
+                            });
+                        }
+                    }
+
+                    if let Some(ref status) = arduino_state.status {
+                        ui.label(status);
+                    }
+                    if let Some(ref err) = arduino_state.last_error {
                         ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
                     }
                 });
@@ -604,13 +1058,29 @@ impl eframe::App for AppUI {
         self.ui_right_panel(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Microwave control section
-            self.ui_center_microwave(ui);
+            // Top row: Microwave and Pressure control sections side-by-side
+            ui.horizontal(|ui| {
+                // Left: Microwave control
+                self.ui_center_microwave(ui);
+                ui.add_space(12.0);
+                // Right: Pressure control
+                self.ui_center_pressure(ui);
+            });
 
             ui.add_space(12.0);
 
-            // Duet control section
+            // Bottom: Duet control section
             self.ui_center_duet(ui);
+
+            ui.add_space(12.0);
+
+            // Print Controls section
+            self.ui_print_controls(ui);
+
+            ui.add_space(12.0);
+
+            // Toolpath creation section
+            self.ui_toolpath_creation(ui);
         });
     }
 }
